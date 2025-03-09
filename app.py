@@ -8,6 +8,7 @@ import voyageai
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.query import Filter, HybridFusion, Metrics
+from weaviate.classes.aggregate import GroupByAggregate
 
 
 SYSTEM_PROMPT = "You are a specialized studio assistant for a busy music producer. Your primary purpose is to provide accurate, concise technical information to maximize the producer's efficiency in the studio. You have access to a RAG (Retrieval-Augmented Generation) system containing a comprehensive index of technical manuals for available studio equipment."
@@ -93,28 +94,20 @@ async def get_filters(query):
     collection = weaviate_client.collections.get("Manuals")
 
     brand_response = collection.aggregate.over_all(
-        return_metrics=Metrics("brand").text(
-            top_occurrences_count=True,
-            top_occurrences_value=True,
-            min_occurrences=5
-        )
+        group_by=GroupByAggregate(prop="brand")
     )
 
     brands = []
-    for occurence in brand_response.properties['brand'].top_occurrences:
-        brands.append(occurence.value)
+    for group in brand_response.groups:
+        brands.append(group.grouped_by.value)
 
     model_response = collection.aggregate.over_all(
-        return_metrics=Metrics("model").text(
-            top_occurrences_count=True,
-            top_occurrences_value=True,
-            min_occurrences=5
-        )
+        group_by=GroupByAggregate(prop="model")
     )
 
     models = []
-    for occurence in model_response.properties['model'].top_occurrences:
-        models.append(occurence.value)
+    for group in model_response.groups:
+        models.append(group.grouped_by.value)
 
     anthropic_client = anthropic.Client()
 
@@ -176,7 +169,10 @@ async def get_filters(query):
     return filters
 
 # Get studio documentation, passing property values as filters
+@cl.step
 async def get_documentation(query = "", filters = {"brands": [], "models": []}):
+
+    current_step = cl.context.current_step
 
     query_embeddings = embedding_client.embed(
         [query],
@@ -200,7 +196,7 @@ async def get_documentation(query = "", filters = {"brands": [], "models": []}):
                 Filter.any_of(filterset)
             ),
             vector=query_embeddings,
-            limit=5,
+            limit=10,
             fusion_type=HybridFusion.RELATIVE_SCORE,
             return_metadata=wvc.query.MetadataQuery(certainty=True)
         )
@@ -208,14 +204,14 @@ async def get_documentation(query = "", filters = {"brands": [], "models": []}):
         response = collection.query.hybrid(
             query=query,
             vector=query_embeddings,
-            limit=5,
+            limit=10,
             fusion_type=HybridFusion.RELATIVE_SCORE,
             return_metadata=wvc.query.MetadataQuery(certainty=True)
         )
 
     documents = {}
     for object in response.objects:
-        documents[object.uuid] = object.properties['content']
+        documents[str(object.uuid)] = object.properties['content']
 
     return documents
 
@@ -259,12 +255,17 @@ async def start_chat():
 @cl.on_message
 async def chat(message: cl.Message):
 
+    entities = cl.user_session.get("entities")
+
     # Only query documentation if the session has mentioned specific entities
     filters = await get_filters(message.content)
-    entities = cl.user_session.get("entities")
-    entities["brands"].extend(filters["brands"])
-    entities["models"].extend(filters["models"])
-    cl.user_session.set("entities", entities)
+
+    if len(filters["brands"]) > 0 or len(filters["models"]) > 0:
+        # TODO: test whether aggregating or replacing entities works better.
+        # entities["brands"].extend(filters["brands"])
+        # entities["models"].extend(filters["models"])
+        entities = filters
+        cl.user_session.set("entities", entities)
 
     if entities["brands"] or entities["models"]:
         documents = await get_documentation(message.content, entities)
