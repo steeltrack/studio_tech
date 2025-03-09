@@ -1,0 +1,7 @@
+__pycache__
+.env
+.files
+.venv
+output*
+documents
+.DS_Store

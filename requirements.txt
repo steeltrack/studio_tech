@@ -1,0 +1,7 @@
+anthropic==0.49.0
+chainlit==2.2.1
+fitz==0.0.1.dev2
+tqdm==4.67.1
+unstructured==0.16.25
+voyageai==0.3.2
+weaviate==0.1.2
