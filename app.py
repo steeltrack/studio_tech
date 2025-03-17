@@ -63,6 +63,31 @@ claude_client = anthropic.AsyncAnthropic()
 weaviate_client = weaviate.connect_to_local()
 embedding_client = voyageai.Client()
 
+def extract_tag_value(text, tag_name):
+    """
+    Extract values from XML-like tags in a text.
+    
+    Args:
+        text (str): Text to search in
+        tag_name (str): Name of the tag to extract from
+        
+    Returns:
+        string: Extracted value if no match or value is "none"
+    """
+    pattern = f'<{tag_name}>(.*?)</{tag_name}>'
+    match = re.search(pattern, text, re.DOTALL)
+    
+    if not match:
+        return []
+    
+    match_value = match.group(1).strip()
+    
+    if match_value.lower() == "none":
+        return []
+    
+    # Split by lines and filter out empty strings
+    return match_value
+
 def extract_tag_values(text, tag_name):
     """
     Extract values from XML-like tags in a text.
@@ -88,6 +113,7 @@ def extract_tag_values(text, tag_name):
     # Split by lines and filter out empty strings
     return [line.strip() for line in match_values.splitlines() if line.strip()]
 
+@cl.step
 async def get_filters(query):
 
     weaviate_client = weaviate.connect_to_local()
@@ -128,6 +154,10 @@ async def get_filters(query):
     {USER_QUERY}
     </user_query>
 
+    <reasoning>
+    Provide your reasoning here:
+    </reasoning>
+
     Provide your response in the following format:
 
     <brands>
@@ -156,7 +186,7 @@ async def get_filters(query):
         ]
     )
 
-    filters = {"brands": [], "models": []}
+    filters = {"brands": [], "models": [], "reasoning": ""}
 
     brands = extract_tag_values(llm_response.content[0].text, "brands")
     if brands:
@@ -165,6 +195,10 @@ async def get_filters(query):
     models = extract_tag_values(llm_response.content[0].text, "models")
     if models:
         filters["models"].extend(models)
+
+    reasoning = extract_tag_value(llm_response.content[0].text, "reasoning")
+    if reasoning:
+        filters["reasoning"] = reasoning
 
     return filters
 
@@ -222,19 +256,23 @@ async def call_claude(query: str, documents = {}):
 
     messages.append({"role": "user", "content": TURN_TEMPLATE.format(RETRIEVED_DOCUMENTS="\n".join(documents.values()), USER_QUERY=query)})
 
-    response = cl.Message(content="", author="Claude")
-
-    stream = await claude_client.messages.create(
+    claude_response = await claude_client.messages.create(
         model="claude-3-7-sonnet-latest",
         system=SYSTEM_PROMPT,
         messages=messages,
         max_tokens=8192,
-        stream=True
+        stream=False
     )
 
-    async for data in stream:
-        if data.type == "content_block_delta":
-            await response.stream_token(data.delta.text)
+    # Streaming is really brittle when overloaded.
+    # async for data in stream:
+    #     if data.type == "content_block_delta":
+    #         await response.stream_token(data.delta.text)
+
+    response = cl.Message(
+        content=f"{claude_response.content[0].text}",
+        author="Claude"
+    )
 
     await response.send()
     messages.append({"role": "assistant", "content": response.content})
